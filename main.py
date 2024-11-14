@@ -1,73 +1,96 @@
-
-
-# pip install opencv-contrib-python # some people ask the difference between this and opencv-python
-                                    # and opencv-python contains the main packages wheras the other
-                                    # contains both main modules and contrib/extra modules
-# pip install cvlib # for object detection
-
-# # pip install gtts
-# # pip install playsound
-# use `pip3 install PyObjC` if you want playsound to run more efficiently.
-
 import cv2
 import cvlib as cv
 from cvlib.object_detection import draw_bbox
-from gtts import gTTS
-from playsound import playsound
-from food_facts import food_facts
+import time
+import threading
 
+def get_camera_index():
+    for i in range(4):
+        cap = cv2.VideoCapture(i)
+        if cap.isOpened() and cap.read()[0]:
+            cap.release()
+            return i
+    return None
 
+def display_fps(frame, fps):
+    cv2.putText(frame, f"FPS: {fps:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
+def object_detection_thread(frame, results):
+    # Run object detection on a separate thread
+    bbox, label, conf = cv.detect_common_objects(frame)
+    results["bbox"] = bbox
+    results["label"] = label
+    results["conf"] = conf
 
-def speech(text):
-    print(text)
-    language = "en"
-    output = gTTS(text=text, lang=language, slow=False)
+camera_index = get_camera_index()
+if camera_index is None:
+    print("No camera detected. Please make sure your camera is connected.")
+    exit()
 
-    output.save("./sounds/output.mp3")
-    playsound("./sounds/output.mp3")
+video = cv2.VideoCapture(camera_index)
+if not video.isOpened():
+    print("Failed to open the camera.")
+    exit()
 
-
-video = cv2.VideoCapture(1)
 labels = []
+prev_labels = set()
+fps = 0
+start_time = time.time()
+
+results = {"bbox": [], "label": [], "conf": []}
+detection_thread = None
+frame_count = 0
+detection_interval = 3  # Perform detection every 3 frames
+
+print("Press 'q' to exit the application.")
 
 while True:
     ret, frame = video.read()
-    # Bounding box.
-    # the cvlib library has learned some basic objects using object learning
-    # usually it takes around 800 images for it to learn what a phone is.
-    bbox, label, conf = cv.detect_common_objects(frame)
+    if not ret:
+        print("Error reading frame from camera.")
+        break
 
-    output_image = draw_bbox(frame, bbox, label, conf)
+    # Resize the frame for faster processing
+    frame_resized = cv2.resize(frame, (640, 480))
 
-    cv2.imshow("Detection", output_image)
+    # Run object detection every `detection_interval` frames
+    if frame_count % detection_interval == 0:
+        if detection_thread is None or not detection_thread.is_alive():
+            detection_thread = threading.Thread(target=object_detection_thread, args=(frame_resized, results))
+            detection_thread.start()
 
-    for item in label:
-        if item in labels:
-            pass
-        else:
-            labels.append(item)
+    # Draw bounding boxes if detection results are available
+    if results["bbox"]:
+        output_image = draw_bbox(frame_resized, results["bbox"], results["label"], results["conf"])
+    else:
+        output_image = frame_resized
 
+    # Update FPS
+    current_time = time.time()
+    fps = 1 / (current_time - start_time)
+    start_time = current_time
+    display_fps(output_image, fps)
+
+    # Show the output image
+    cv2.imshow("Optimized Object Detection", output_image)
+    cv2.resizeWindow("Optimized Object Detection", 800, 600)
+
+    # Track detected labels
+    new_labels = set(results["label"])
+    if new_labels != prev_labels:
+        print("New objects detected:", ", ".join(new_labels - prev_labels))
+        prev_labels = new_labels
+
+    frame_count += 1
+
+    # Press 'q' to exit
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 
-i = 0
-new_sentence = []
-for label in labels:
-    if i == 0:
-        new_sentence.append(f"I found a {label}, and, ")
-    else:
-        new_sentence.append(f"a {label},")
+if not prev_labels:
+    print("No objects detected.")
+else:
+    print("Objects detected during the session:", ", ".join(prev_labels))
 
-    i += 1
-
-speech(" ".join(new_sentence))
-speech("Here are the food facts i found for these items:")
-
-for label in labels:
-    try:
-        print(f"\n\t{label.title()}")
-        food_facts(label)
-
-    except:
-        print("No food facts for this item")
+video.release()
+cv2.destroyAllWindows()
